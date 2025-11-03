@@ -1,0 +1,31 @@
+{
+  "default": {
+    "username": ["#username", "input[name*=user]", "input[id*=email]", "input[type=email]"],
+    "password": ["#password", "input[name*=pass]", "input[id*=pass]", "input[type=password]"],
+    "button": ["#submit", "button[type=submit]", "input[type=submit]", "button:has-text('Login')"],
+    "logout": ["a:has-text('Logout')", "button:has-text('Logout')", "#logout", "a[href*='logout']"]
+  },
+
+  "practicetestautomation": {
+    "username": ["#username"],
+    "password": ["#password"],
+    "button": ["#submit"],
+    "logout": ["a:has-text('Log out')", "#logout"]
+  },
+
+  "testerbud": { 
+  "username": ["input[placeholder='Enter your email']", "input[name='email']", "input[type='email']", "input[id*='email']"], 
+  "password": ["input[placeholder='Enter your password']", "input[name='password']", "input[type='password']", "input[id*='password']"], 
+  "button": ["button:has-text('Sign in')", "input[type='submit']", "button[type='submit']"], 
+  "logout": [] 
+  },
+
+  "practice.expandtesting": {
+    "username": ["input[name='userid']", "input#userID", "input[name='email']", "input[type='text']"],
+    "password": ["input[name='password']", "input#password", "input[type='password']"],
+    "button": ["button[type='submit']", "#login", "#signInBtn", "button:has-text('Sign in')"],
+    "logout": ["a[href*='logout']", "#logout-button", "button:has-text('Logout')"]
+  }
+}
+
+
