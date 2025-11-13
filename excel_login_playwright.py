@@ -8,28 +8,50 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 from datetime import datetime
 
-# ========================
-# 🔧 Data source parameter
-# ========================
-# Choose "excel" or "sql" depending on where you want to pull user data from.
-data_source = "excel" or "sql"
-
-
-# ========== SQL CONNECTION ==========
+# ---------------------- SQL Helper ----------------------
 def connect_to_sql():
-    """Connect to SQL Server"""
     try:
-        conn = pyodbc.connect(
-            "Driver={ODBC Driver 17 for SQL Server};"
-            "Server=localhost;"
-            "Database=PortalHealthCheckDB;"
-            "Trusted_Connection=yes;"
-        )
+        conn = pyodbc.connect(SQL_CONNECTION_STRING)
         print("✅ Connected to SQL Server successfully.")
         return conn
     except Exception as e:
-        print(f"❌ SQL Connection Error: {e}")
+        print(f"❌ Error connecting to SQL Server: {e}")
         return None
+
+# ==============================
+#   CONFIGURATION SECTION
+# ==============================
+DATA_SOURCE = "sql"   # Change to "excel" when reading from SQL Server
+EXCEL_FILE = "users with domain logout.xlsx"
+
+# SQL Server connection details
+SQL_CONNECTION_STRING = (
+    "Driver={ODBC Driver 17 for SQL Server};"
+    "Server=localhost;"
+    "Database=PortalHealthCheckDB;"
+    "Trusted_Connection=yes;"
+)
+
+# ==============================
+#   DATA LOADING SECTION
+# ==============================
+if DATA_SOURCE.lower() == "excel":
+    print("📗 Reading input from Excel file...")
+    df = pd.read_excel(EXCEL_FILE)
+
+elif DATA_SOURCE.lower() == "sql":
+    print("🧩 Reading input from SQL Server...")
+    try:
+        conn_load = pyodbc.connect(SQL_CONNECTION_STRING)
+        query = "SELECT Username, Password, URL, Domain FROM ExcelLoginStatus;"
+        df = pd.read_sql(query, conn_load)
+        conn_load.close()
+    except Exception as e:
+        print(f"❌ SQL Read Error: {e}")
+        df = pd.DataFrame()  # fallback if SQL fails
+
+else:
+    raise ValueError("❌ Invalid DATA_SOURCE! Please use 'excel' or 'sql'.")
 
 
 # ========== LOAD SELECTORS ==========
@@ -84,15 +106,22 @@ async def perform_logout(page, selectors):
 
 
 # ========== MAIN FUNCTION ==========
-async def check_logins(excel_file="users_with_domain_logout.xlsx", selector_file="selectors.json"):
+async def check_logins(excel_file="users with domain logout.xlsx", selector_file="selectors.json"):
     """Main automation + SQL integration"""
 
-    # Read Excel
-    try:
-        df = pd.read_excel(excel_file)
-    except Exception as e:
-        print(f"❌ Error reading Excel: {e}")
-        return
+   # -------------------------------
+# ✅ Choose data source dynamically
+# -------------------------------
+    if DATA_SOURCE == "sql":
+        print("📡 Reading data from SQL Server...")
+        conn = pyodbc.connect(SQL_CONNECTION_STRING)
+        df = pd.read_sql("SELECT * FROM ExcelLoginStatus", conn)
+    else:
+        print("📘 Reading data from Excel file...")
+        try:
+          df = pd.read_excel(EXCEL_FILE)
+        except Exception as e:
+          print(f"❌ Error opening Excel file: {e}\nClose it and retry.")
 
     selector_map = load_selectors(selector_file)
 
@@ -128,27 +157,40 @@ async def check_logins(excel_file="users_with_domain_logout.xlsx", selector_file
         total_rows = len(df)
 
         for i, row in df.iterrows():
-            url = str(row.get("url", "")).strip()
-            username = str(row.get("username", "")).strip()
-            password = str(row.get("password", "")).strip()
-            domain = str(row.get("domain", "")).strip() or urlparse(url).netloc
+            # ✅ Read data safely
+            url = str(row.get("URL", "")).strip()
+            username = str(row.get("Username", "")).strip()
+            password = str(row.get("Password", "")).strip()
+            domain = str(row.get("Domain", "")).strip() or urlparse(url).netloc
 
-            print(f"\n🌐 Checking {domain} for user '{username}' (Row {i+1}/{total_rows})")
+
+            # ✅ Validate URL before using it
+            if url and not url.lower().startswith("http"):
+                url = "https://" + url
+
+            if not url:
+                print(f"⚠️ No valid URL found for row {i+1}, skipping.")
+                continue
+
+            print(f"\n🌍 Navigating to: {url}")
             selectors = selector_map.get(domain, selector_map.get("default", {}))
 
             if not selectors:
-                print(f"⚠️ No selectors for {domain}")
+                print(f"⚠️ No selectors found for {domain}")
                 df.at[i, "status"] = "⚠️ No Selectors Found"
                 continue
 
             try:
+                # ✅ Navigate to the page
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(3)
 
+                # Fill username/password
                 filled = await detect_and_fill(page, username, password, selectors)
                 if not filled:
                     raise Exception("Username/Password fields not found")
 
+                # Click login button
                 clicked = await click_login_button(page, selectors)
                 if not clicked:
                     raise Exception("Login button not found")
@@ -156,7 +198,7 @@ async def check_logins(excel_file="users_with_domain_logout.xlsx", selector_file
                 await asyncio.sleep(4)
                 html = (await page.content()).lower()
 
-                # Identify status by response text
+                # ✅ Determine login result
                 if "welcome" in html or "success" in html:
                     status = "✅ Login Successful"
                 elif "invalid" in html or "error" in html or "wrong" in html:
@@ -164,50 +206,57 @@ async def check_logins(excel_file="users_with_domain_logout.xlsx", selector_file
                 else:
                     status = "⚠️ Unknown Response"
 
-                # ✅ Logout logic rules
+                # ✅ Logout logic
                 if i == total_rows - 1:
-                    # Skip logout for last row
                     logout_status = "⏭️ Logout Skipped (Last Row)"
                 elif status == "❌ Invalid Credentials":
-                    # Skip logout for invalid credentials
                     logout_status = "⏭️ Logout Skipped (Invalid Login)"
                 else:
-                    # Perform logout normally
                     logout_status = await perform_logout(page, selectors)
 
             except Exception as e:
                 status = f"❌ Error: {str(e)[:60]}"
                 logout_status = "—"
 
-            # Update Excel
-            df.at[i, "domain"] = domain
-            df.at[i, "status"] = status
-            df.at[i, "logout_status"] = logout_status
-            df.at[i, "last_checked"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # ✅ Update Excel columns
+            df.at[i, "Domain"] = domain
+            df.at[i, "Status"] = status
+            df.at[i, "Logout_Status"] = logout_status
+            df.at[i, "Last_Checked"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # ✅ Insert into SQL
-            if conn:
-                try:
-                    cursor.execute("""
-                        INSERT INTO ExcelLoginStatus
-                        (Username, Password, URL, Domain, Status, Logout_Status, Last_Checked)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, username, password, url, domain, status, logout_status, datetime.now())
-                    conn.commit()
-                    print("🗂️ Inserted into SQL successfully.")
-                except Exception as e:
-                    print(f"⚠️ SQL Insert Error: {e}")
+        # ✅ Update existing data in SQL
+    if conn:
+        try:
+            now_time = datetime.now()
+            cursor.execute(
+                """
+                UPDATE ExcelLoginStatus
+                SET Last_Checked = ?;
+                """,
+                (now_time,)
+            )
+            conn.commit()
+            print(f"✅ Updated Last_Checked for all URLs at {now_time}")
 
-            # Save Excel safely
-            for retry in range(3):
-                try:
-                    temp = excel_file.replace(".xlsx", f"_tmp{retry}.xlsx")
-                    df.to_excel(temp, index=False)
-                    os.replace(temp, excel_file)
-                    break
-                except PermissionError:
-                    print("⚠️ Excel open, retrying in 3s...")
-                    time.sleep(3)
+        except Exception as e:
+            print(f"💥 SQL Update Error while updating all URLs: {e}")
+
+
+        # ✅ Update Excel 'last_checked' with date and time
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.at[i, "last_Checked"] = current_time
+        print(f"🕒 Updated Excel last_Checked for row {i+1}: {current_time}")
+
+        # ✅ Save Excel safely
+        for retry in range(3):
+            try:
+                temp_file = excel_file.replace(".xlsx", f"_tmp{retry}.xlsx")
+                df.to_excel(temp_file, index=False)
+                os.replace(temp_file, excel_file)
+                break
+            except PermissionError:
+                print("⚠️ Excel file is open, retrying in 3 seconds...")
+                time.sleep(3)
 
             print(f"➡️ {status} | {logout_status}")
 
@@ -222,7 +271,3 @@ async def check_logins(excel_file="users_with_domain_logout.xlsx", selector_file
 
 # ========== RUN SCRIPT ==========
 asyncio.run(check_logins())
-
-
-
-
